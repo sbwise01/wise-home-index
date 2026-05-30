@@ -2,20 +2,38 @@ package com.bradandmarsha.wisehomeindex.util;
 
 import jakarta.servlet.http.HttpServletRequest;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.logging.Logger;
 
 /**
  * Helpers for classifying the origin of an HTTP request.
  *
- * <p>Requests originating from the trusted private subnet are allowed to see
- * both public and private URLs. Everything else is treated as an internet-based
- * source and only sees public URLs.</p>
+ * <p>Requests originating from a trusted source are allowed to see both public
+ * and private URLs. Everything else is treated as an internet-based source and
+ * only sees public URLs.</p>
+ *
+ * <p>A request is trusted when its client IP either:</p>
+ * <ul>
+ *   <li>falls within the trusted private subnet (see {@link #PRIVATE_NETWORK_CIDR}), or</li>
+ *   <li>matches a current public IP of the home host (see {@link #PUBLIC_HOST}).</li>
+ * </ul>
  *
  * <p>The trusted subnet defaults to {@value #DEFAULT_PRIVATE_NETWORK_CIDR} but
  * can be overridden at startup via the system property
  * {@value #SYSTEM_PROPERTY} or the environment variable {@value #ENV_VARIABLE}
  * (the system property takes precedence). The value must be IPv4 CIDR notation,
  * e.g. {@code 10.0.0.0/8}. An invalid value falls back to the default.</p>
+ *
+ * <p>The home host defaults to {@value #DEFAULT_PUBLIC_HOST} and can be
+ * overridden via the system property {@value #PUBLIC_HOST_SYSTEM_PROPERTY} or
+ * the environment variable {@value #PUBLIC_HOST_ENV_VARIABLE}. Because that
+ * host typically uses dynamic DNS, its IP addresses are re-resolved on demand
+ * and cached for {@value #PUBLIC_IP_TTL_MILLIS} ms. Only IPv4 addresses are
+ * considered.</p>
  */
 public final class NetworkUtil {
 
@@ -28,11 +46,27 @@ public final class NetworkUtil {
     /** Default trusted private subnet when nothing is configured. */
     public static final String DEFAULT_PRIVATE_NETWORK_CIDR = "192.168.0.0/24";
 
+    /** System property used to override the trusted home host. */
+    public static final String PUBLIC_HOST_SYSTEM_PROPERTY = "wise.home.index.public.host";
+    /** Environment variable used to override the trusted home host. */
+    public static final String PUBLIC_HOST_ENV_VARIABLE = "WISE_HOME_INDEX_PUBLIC_HOST";
+    /** Default trusted home host when nothing is configured. */
+    public static final String DEFAULT_PUBLIC_HOST = "home.bradandmarsha.com";
+
+    /** How long resolved public host IPs are cached before being re-resolved. */
+    public static final long PUBLIC_IP_TTL_MILLIS = 5 * 60 * 1000L;
+
     /** The trusted private subnet that is allowed to see private URLs (resolved at load time). */
     public static final String PRIVATE_NETWORK_CIDR;
 
+    /** The trusted home host whose current public IP(s) are allowed to see private URLs. */
+    public static final String PUBLIC_HOST;
+
     private static final int PRIVATE_NETWORK;
     private static final int PRIVATE_MASK;
+
+    private static volatile Set<Integer> cachedPublicIps = Set.of();
+    private static volatile long publicIpsExpireAt = 0L;
 
     static {
         String configured = resolveConfiguredCidr();
@@ -56,7 +90,11 @@ public final class NetworkUtil {
         PRIVATE_NETWORK_CIDR = cidr;
         PRIVATE_MASK = parsed[1];
         PRIVATE_NETWORK = parsed[0] & parsed[1];
-        LOG.info(() -> "Trusted private network configured as " + PRIVATE_NETWORK_CIDR);
+
+        PUBLIC_HOST = resolveConfiguredPublicHost();
+
+        LOG.info(() -> "Trusted private network configured as " + PRIVATE_NETWORK_CIDR
+                + "; trusted home host configured as " + PUBLIC_HOST);
     }
 
     private NetworkUtil() {
@@ -68,6 +106,18 @@ public final class NetworkUtil {
             return fromProperty;
         }
         return System.getenv(ENV_VARIABLE);
+    }
+
+    private static String resolveConfiguredPublicHost() {
+        String fromProperty = System.getProperty(PUBLIC_HOST_SYSTEM_PROPERTY);
+        if (fromProperty != null && !fromProperty.isBlank()) {
+            return fromProperty.trim();
+        }
+        String fromEnv = System.getenv(PUBLIC_HOST_ENV_VARIABLE);
+        if (fromEnv != null && !fromEnv.isBlank()) {
+            return fromEnv.trim();
+        }
+        return DEFAULT_PUBLIC_HOST;
     }
 
     /**
@@ -107,13 +157,77 @@ public final class NetworkUtil {
     }
 
     /**
-     * Convenience that resolves the client IP from a request and classifies it.
+     * @param ip an IPv4 (or IPv4-mapped) address string
+     * @return {@code true} if the address matches a current public IP of the
+     *         trusted home host (see {@link #PUBLIC_HOST})
+     */
+    public static boolean isPublicHostIp(String ip) {
+        return matchesPublicHostIp(ip, publicHostIps());
+    }
+
+    /**
+     * Determines whether a request should be trusted to see private URLs.
      *
      * @param request the incoming request
-     * @return {@code true} if the request originates from the trusted private subnet
+     * @return {@code true} if the request originates from the trusted private
+     *         subnet or from a current public IP of the trusted home host
      */
     public static boolean isPrivateRequest(HttpServletRequest request) {
-        return isPrivateNetwork(resolveClientIp(request));
+        String clientIp = resolveClientIp(request);
+        return isPrivateNetwork(clientIp) || isPublicHostIp(clientIp);
+    }
+
+    /**
+     * @return the currently cached public IP(s) of the trusted home host, in
+     *         dotted-quad form (re-resolving if the cache has expired)
+     */
+    public static List<String> resolvedPublicIps() {
+        return publicHostIps().stream().map(NetworkUtil::ipToString).toList();
+    }
+
+    /**
+     * Matching core, exposed for testing with an injected trusted-IP set so the
+     * logic can be verified without performing real DNS resolution.
+     *
+     * @param ip        the candidate IP string
+     * @param publicIps the set of trusted public IPs (as packed ints)
+     * @return {@code true} if {@code ip} parses to one of {@code publicIps}
+     */
+    public static boolean matchesPublicHostIp(String ip, Set<Integer> publicIps) {
+        Integer parsed = parseIpv4(ip);
+        if (parsed == null || publicIps == null || publicIps.isEmpty()) {
+            return false;
+        }
+        return publicIps.contains(parsed);
+    }
+
+    private static Set<Integer> publicHostIps() {
+        long now = System.currentTimeMillis();
+        if (now < publicIpsExpireAt) {
+            return cachedPublicIps;
+        }
+        Set<Integer> resolved = new LinkedHashSet<>();
+        try {
+            for (InetAddress addr : InetAddress.getAllByName(PUBLIC_HOST)) {
+                Integer ip = parseIpv4(addr.getHostAddress());
+                if (ip != null) {
+                    resolved.add(ip);
+                }
+            }
+            cachedPublicIps = Set.copyOf(resolved);
+        } catch (UnknownHostException ex) {
+            // Keep serving with the last-known IPs rather than losing trust on a transient DNS failure.
+            LOG.warning(() -> "Unable to resolve trusted home host '" + PUBLIC_HOST + "': " + ex.getMessage());
+        }
+        publicIpsExpireAt = now + PUBLIC_IP_TTL_MILLIS;
+        return cachedPublicIps;
+    }
+
+    private static String ipToString(int ip) {
+        return ((ip >> 24) & 0xFF) + "."
+                + ((ip >> 16) & 0xFF) + "."
+                + ((ip >> 8) & 0xFF) + "."
+                + (ip & 0xFF);
     }
 
     private static Integer parseIpv4(String ip) {

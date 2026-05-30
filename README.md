@@ -6,10 +6,11 @@ A small Java REST web service (JAX-RS / Jersey on Apache Tomcat) that renders an
 index page of homelab applications. The set of applications shown depends on
 where the request comes from:
 
-| Request origin                | Shows                          |
-| ----------------------------- | ------------------------------ |
-| Private LAN                   | public **and** private URLs    |
-| Anywhere else (internet)      | public URLs only               |
+| Request origin                          | Shows                          |
+| --------------------------------------- | ------------------------------ |
+| Private LAN                             | public **and** private URLs    |
+| The home host's public IP (hairpin NAT) | public **and** private URLs    |
+| Anywhere else (internet)                | public URLs only               |
 
 * **Public URLs** are sub-domains of `home.bradandmarsha.com`.
 * **Private URLs** are short names.
@@ -35,15 +36,30 @@ The configuration file is resolved in this order:
 3. The bundled sample `applications.yaml` (used if neither of the above is set
    or the configured path is not readable)
 
-### Trusted private subnet
+### Trusted request origins
 
-The subnet whose requests may see private URLs defaults to `192.168.0.0/24`.
-Override it (IPv4 CIDR notation) with either:
+A request may see private URLs when its client IP either falls within the
+trusted private subnet **or** matches a current public IP of the trusted home
+host. The latter covers LAN clients that reach the page via the public domain
+(hairpin NAT), where the observed source IP is the home's WAN address rather
+than a LAN address.
+
+The subnet defaults to `192.168.0.0/24`. Override it (IPv4 CIDR notation) with
+either:
 
 1. System property `wise.home.index.private.cidr`
 2. Environment variable `WISE_HOME_INDEX_PRIVATE_CIDR`
 
 An invalid value logs a warning and falls back to the default.
+
+The home host defaults to `home.bradandmarsha.com`. Override it with either:
+
+1. System property `wise.home.index.public.host`
+2. Environment variable `WISE_HOME_INDEX_PUBLIC_HOST`
+
+Its IP addresses are re-resolved via DNS on demand and cached for 5 minutes (to
+tolerate dynamic DNS). Only IPv4 addresses are considered; transient DNS
+resolution failures keep the last-known IPs.
 
 ## Endpoints
 
@@ -74,6 +90,7 @@ docker run --rm -p 8080:8080 sbwise/wise-home-index
 # Run with your own config mounted at the default location
 docker run --rm -p 8080:8080 \
   -e WISE_HOME_INDEX_PRIVATE_CIDR="192.168.40.0/24" \
+  -e WISE_HOME_INDEX_PUBLIC_HOST="home.bradandmarsha.com" \
   -v "$(pwd)/my-applications.yaml:/config/applications.yaml:ro" \
   sbwise/wise-home-index
 ```

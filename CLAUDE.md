@@ -8,8 +8,11 @@ request's network origin.
 
 - Serves an HTML index page of homelab applications as clickable tiles.
 - Filters visible applications by request origin:
-  - Requests from private LAN see **public and private** URLs.
-  - All other (internet) requests see **public URLs only**.
+ - Requests from the private LAN see **public and private** URLs.
+ - Requests whose client IP matches a current public IP of the home host
+   (`home.bradandmarsha.com`, e.g. LAN clients arriving via hairpin NAT) also see
+   **public and private** URLs.
+ - All other (internet) requests see **public URLs only**.
 - URL classification (derived automatically from each URL):
   - **Public**  = sub-domains of `home.bradandmarsha.com`.
   - **Private** = short names.
@@ -60,11 +63,20 @@ src/test/java/.../IndexServiceTest.java Visibility-filtering tests
 ## How key requirements are implemented
 
 - **Request-context filtering** lives in `NetworkUtil`. It resolves the client
-  IP from `X-Forwarded-For`, then `X-Real-IP`, then `remoteAddr` (so it works
-  behind a k8s ingress), and matches it against the trusted subnet. The subnet
-  defaults to `192.168.0.0/24` but is configurable at startup via the
-  `wise.home.index.private.cidr` system property or `WISE_HOME_INDEX_PRIVATE_CIDR`
-  environment variable (IPv4 CIDR notation; invalid values fall back to the default).
+ IP from `X-Forwarded-For`, then `X-Real-IP`, then `remoteAddr` (so it works
+ behind a k8s ingress). A request is trusted (sees private URLs) when its client
+ IP either falls within the trusted subnet **or** matches a current public IP of
+ the trusted home host:
+ - The subnet defaults to `192.168.0.0/24` but is configurable at startup via the
+   `wise.home.index.private.cidr` system property or `WISE_HOME_INDEX_PRIVATE_CIDR`
+   environment variable (IPv4 CIDR notation; invalid values fall back to the default).
+ - The home host defaults to `home.bradandmarsha.com` but is configurable via the
+   `wise.home.index.public.host` system property or `WISE_HOME_INDEX_PUBLIC_HOST`
+   environment variable. Its IPs are re-resolved via DNS on demand and cached for
+   5 minutes (handles dynamic DNS); only IPv4 addresses are considered, and a
+   transient DNS failure keeps the last-known IPs. The matching core is the
+   package-private `NetworkUtil.matchesPublicHostIp(ip, trustedSet)`, which takes
+   an injected IP set so it can be unit-tested without real DNS.
 - **Public vs private** is decided per URL in `ApplicationEntry.isPublic()`:
   the host must equal or be a sub-domain of `home.bradandmarsha.com`.
 - **Static assets** (the default tile) are served by Tomcat's default servlet.
@@ -83,6 +95,10 @@ The YAML config path is resolved in this order:
 The trusted private subnet is resolved similarly (system property
 `wise.home.index.private.cidr`, then env var `WISE_HOME_INDEX_PRIVATE_CIDR`,
 then the `192.168.0.0/24` default).
+
+The trusted home host is resolved the same way (system property
+`wise.home.index.public.host`, then env var `WISE_HOME_INDEX_PUBLIC_HOST`, then
+the `home.bradandmarsha.com` default).
 
 ```yaml
 applications:
@@ -104,6 +120,7 @@ docker build --platform linux/amd64 -t sbwise/wise-home-index .
 docker run --rm -p 8080:8080 sbwise/wise-home-index                # bundled sample config
 docker run --rm -p 8080:8080 \
   -e WISE_HOME_INDEX_PRIVATE_CIDR="192.168.40.0/24" \
+  -e WISE_HOME_INDEX_PUBLIC_HOST="home.bradandmarsha.com" \
   -v "$(pwd)/my-apps.yaml:/config/applications.yaml:ro" \
   sbwise/wise-home-index                                           # custom config
 

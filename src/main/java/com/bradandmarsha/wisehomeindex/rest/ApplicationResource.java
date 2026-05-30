@@ -38,6 +38,7 @@ public class ApplicationResource {
         return Map.of(
                 "scope", privateRequest ? "private" : "public",
                 "clientIp", String.valueOf(NetworkUtil.resolveClientIp(request)),
+                "trustedPublicIps", NetworkUtil.resolvedPublicIps(),
                 "count", applications.size(),
                 "applications", applications
         );
