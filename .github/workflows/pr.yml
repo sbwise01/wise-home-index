@@ -26,9 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     # Same-repo PRs only. Fork PRs can't be granted write on the branch to push
     # the bump (and can't assume AWS roles), matching wise-k8s/terraform-plan.yml.
-    # Skip runs triggered by the bot's own bump commit: GITHUB_TOKEN pushes do
-    # fire pull_request synchronize, but github.actor is then github-actions[bot]
-    # and those re-runs need maintainer approval under typical Actions settings.
+    # Bot bump commits use [skip ci] so the workflow is not triggered at all; the
+    # github.actor guard below is a backup if a run is still queued (that path
+    # still prompts for approval on the PR before skipping the job).
     if: github.event.pull_request.head.repo.full_name == github.repository
         && github.actor != 'github-actions[bot]'
     steps:
@@ -115,9 +115,8 @@ jobs:
           cache-to: type=gha,mode=max
 
       # 5. Compute next = base + bump, write it to pom.xml, and commit to the PR.
-      #    The bump uses GITHUB_TOKEN; that push fires pull_request synchronize, but
-      #    the job's github.actor guard skips bot-triggered re-runs (no loop, no
-      #    maintainer-approval prompt). Idempotent: if pom already equals `next`, no commit.
+      #    [skip ci] on the bump commit prevents re-triggering this workflow; the
+      #    github.actor guard is a backup. Idempotent: if pom already equals `next`, no commit.
       - name: Compute next version & bump pom.xml
         env:
           BASE_VERSION: ${{ steps.base.outputs.base_version }}

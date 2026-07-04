@@ -196,11 +196,11 @@ this section is the "why" and what's left.
   version (release tags on every merge; a "no-bump" PR would collide on the tag).
 - `pr.yml` bumps from **main's** pom version (not the PR's own), which is what makes
   the bump idempotent across re-runs after the bot has already committed a bump.
-- **No bot re-run loop:** the bump commit is pushed with `GITHUB_TOKEN`, which *does*
-  fire `pull_request` synchronize — but the job skips when `github.actor` is
-  `github-actions[bot]`, so the bump cannot retrigger itself or land in the
-  maintainer-approval queue. Chosen over `[skip ci]`, which can leak through a
-  rebase/merge and skip the release run.
+- **No bot re-run loop:** the bump commit message includes `[skip ci]`, so GitHub does
+  not trigger `pr.yml` on that push at all (unlike the `github.actor` guard alone,
+  which still queues the workflow and can prompt for approval before skipping the job).
+  Squash-merge uses the PR title on `main`, so `[skip ci]` on the bump commit does
+  not suppress `release.yml`. The `github.actor` guard remains as a backup.
 - **Burned versions:** `release.yml` creates the tag *before* the image push, so a
   failed publish leaves a reserved tag with no image; the next PR simply bumps past
   it. A "tag already exists" guard means versions are never reused.
