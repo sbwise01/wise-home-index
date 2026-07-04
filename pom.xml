@@ -6,7 +6,7 @@
 
     <groupId>com.bradandmarsha</groupId>
     <artifactId>wise-home-index</artifactId>
-    <version>2.0.0</version>
+    <version>2.1.0</version>
     <packaging>war</packaging>
 
     <name>wise-home-index</name>
