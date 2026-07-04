@@ -1,0 +1,118 @@
+name: Release (tag + push image)
+
+on:
+  push:
+    branches: [main]
+    # Only source changes cut a release. Metadata-only merges (docs, LICENSE,
+    # workflows, etc.) don't tag or publish. A real change always bumps pom.xml,
+    # so the release trigger fires on every code merge.
+    paths:
+      - "src/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pom.xml"
+
+permissions:
+  id-token: write # AWS OIDC (assume dockerhub-role)
+  contents: write # push the git tag
+
+# Never run two releases at once, and never cancel one mid-push.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  DOCKERHUB_ROLE_ARN: arn:aws:iam::712671171381:role/dockerhub-role
+  IMAGE: sbwise/wise-home-index
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags
+
+      # 1. pom.xml is the single source of truth for the released version.
+      - name: Read version from pom.xml
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(python3 .github/scripts/pom_version.py pom.xml)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $version"
+
+      # 2. If this version is already tagged, it was released or burned. Fail so a
+      #    new bump PR must be merged (versions are never reused).
+      - name: Guard against existing tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch origin --tags --quiet
+          if git tag --list "$VERSION" | grep -qx "$VERSION"; then
+            echo "::error::tag '$VERSION' already exists — already released or burned. Merge a new version bump."
+            exit 1
+          fi
+
+      # 3. Create + push the tag on the merge commit FIRST. This reserves the
+      #    version: if the build/push below fails, the tag remains and the version
+      #    is burned (never reused), as designed.
+      - name: Create & push git tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "Release $VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/$VERSION"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 4. Secrets: OIDC -> dockerhub-role -> SSM (no long-lived GitHub secret).
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DOCKERHUB_ROLE_ARN }}
+          role-session-name: gha-dockerhub-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Fetch Docker Hub credentials from SSM
+        run: |
+          set -euo pipefail
+          username="$(aws ssm get-parameter \
+            --name /dockerhub/api/username \
+            --with-decryption \
+            --query Parameter.Value \
+            --output text)"
+          token="$(aws ssm get-parameter \
+            --name /dockerhub/api/token \
+            --with-decryption \
+            --query Parameter.Value \
+            --output text)"
+          echo "::add-mask::${username}"
+          echo "::add-mask::${token}"
+          echo "DOCKERHUB_USERNAME=${username}" >> "$GITHUB_ENV"
+          echo "DOCKERHUB_TOKEN=${token}" >> "$GITHUB_ENV"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      # 5. Build + push the image tagged with the pom version.
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

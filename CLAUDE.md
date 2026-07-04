@@ -171,3 +171,65 @@ Without a reachable cluster the app still starts and serves an empty index
   must preserve it (ingress `X-Forwarded-For`, or `externalTrafficPolicy: Local`).
 - Discovery needs the ingress RBAC ClusterRole/Binding; keep them in sync with the
   service account when changing namespaces or resource scope.
+- CI/CD is implemented; operational docs are in the README ("CI/CD"). The design
+  rationale, invariants, and remaining follow-ups are under "CI/CD design decisions
+  & state" below — read it before changing `.github/workflows/`.
+
+## CI/CD design decisions & state
+
+Pipeline: `.github/workflows/pr.yml`, `.github/workflows/release.yml`, and the
+`.github/scripts/pom_version.py` helper. Operator-facing usage is in the README;
+this section is the "why" and what's left.
+
+**Version management — home-grown Conventional Commits (deliberately not `release-please`).**
+
+- PR title is the Conventional Commit; `pom.xml` `<version>` is the single source
+  of truth; a git tag equal to the pom version (raw value, no `v` prefix) marks
+  each release. Invariant on `main`: the pom version always has a matching tag.
+- Both workflows are `paths`-scoped to `src/**`, `Dockerfile`, `.dockerignore`,
+  `pom.xml`, so metadata-only changes never test/build/release. This composes with the version
+  flow: a code PR touches `src`/`Dockerfile`, `pr.yml` then bumps `pom.xml`, and
+  the merge therefore always includes a `pom.xml` change so `release.yml` fires.
+- Bump derives from the **PR title**, not commit history — squash-merge friendly
+  and it's the thing we already validate. Easy to switch to commit-scanning later.
+- Any valid non-`feat`/non-breaking title → **patch**, so every merge advances the
+  version (release tags on every merge; a "no-bump" PR would collide on the tag).
+- `pr.yml` bumps from **main's** pom version (not the PR's own), which is what makes
+  the bump idempotent across re-runs after the bot has already committed a bump.
+- **No self-retrigger:** the bump commit is pushed with the default `GITHUB_TOKEN`;
+  GitHub does not start new runs from `GITHUB_TOKEN` pushes, so it can't loop.
+  Chosen over `[skip ci]`, which can leak through a rebase/merge and skip the
+  release run.
+- **Burned versions:** `release.yml` creates the tag *before* the image push, so a
+  failed publish leaves a reserved tag with no image; the next PR simply bumps past
+  it. A "tag already exists" guard means versions are never reused.
+- **Concurrent-PR version race** is prevented by the PR up-to-date check plus the
+  branch-protection rule "Require branches to be up to date before merging".
+- **Caveat:** because the bump commit is pushed with `GITHUB_TOKEN`, `pr.yml` does
+  not re-run on that final SHA, so its status won't reappear there. Merge as admin,
+  or (future) push the bump with a PAT/GitHub App so checks re-run and converge
+  (the bump step is already idempotent).
+
+**Secrets — GitHub OIDC → AWS SSM, Docker Hub kept.**
+
+- `release.yml` assumes IAM role `dockerhub-role`
+  (`arn:aws:iam::712671171381:role/dockerhub-role`, region `us-east-2`, provisioned
+  in `wise-aws-terraform-bootstrap`) via GitHub OIDC, then reads
+  `/dockerhub/api/username` + `/dockerhub/api/token` (SecureString, SOPS-managed)
+  from SSM at runtime — same pattern as wise-k8s `terraform-plan.yml`'s Infracost
+  key. No long-lived Docker Hub secret lives in GitHub; rotation is central in SSM.
+- Rejected alternatives: GitHub environment secrets (still a long-lived secret in
+  GitHub); GHCR / ECR (would change the cluster's image pull path). Docker Hub has
+  no native keyless/OIDC login, hence the SSM approach.
+
+**Cross-repo deploy — out of scope.** Rolling the new tag into `wise-k8s`
+`deployment.yaml` is delegated to **FluxCD image update automation** (watches the
+Docker Hub repo); `release.yml` stops at pushing the image.
+
+**Version state:** reconciled at `2.0.0` across `pom.xml`, git tag `2.0.0` (commit
+`bd234e0`, present locally and on the remote), the Docker Hub image, and
+`wise-k8s .../deployment.yaml`.
+
+**Open follow-up:** `wise-k8s` overlay cleanup — drop the now-unused
+`applications.yaml` ConfigMap and `WISE_HOME_INDEX_CONFIG` mount; optionally set
+`WISE_HOME_INDEX_REFRESH_SECONDS`. (The deployment image tag is already `2.0.0`.)
