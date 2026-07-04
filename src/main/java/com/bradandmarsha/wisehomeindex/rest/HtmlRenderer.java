@@ -78,7 +78,7 @@ final class HtmlRenderer {
     private static String css() {
         return """
                 :root {
-                  --bg: #0f172a;
+                  --bg: #152238;
                   --bg-card: #1e293b;
                   --bg-card-hover: #334155;
                   --text: #e2e8f0;
