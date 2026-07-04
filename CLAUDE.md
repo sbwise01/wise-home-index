@@ -196,19 +196,21 @@ this section is the "why" and what's left.
   version (release tags on every merge; a "no-bump" PR would collide on the tag).
 - `pr.yml` bumps from **main's** pom version (not the PR's own), which is what makes
   the bump idempotent across re-runs after the bot has already committed a bump.
-- **No self-retrigger:** the bump commit is pushed with the default `GITHUB_TOKEN`;
-  GitHub does not start new runs from `GITHUB_TOKEN` pushes, so it can't loop.
-  Chosen over `[skip ci]`, which can leak through a rebase/merge and skip the
-  release run.
+- **No bot re-run loop:** the bump commit is pushed with `GITHUB_TOKEN`, which *does*
+  fire `pull_request` synchronize — but the job skips when `github.actor` is
+  `github-actions[bot]`, so the bump cannot retrigger itself or land in the
+  maintainer-approval queue. Chosen over `[skip ci]`, which can leak through a
+  rebase/merge and skip the release run.
 - **Burned versions:** `release.yml` creates the tag *before* the image push, so a
   failed publish leaves a reserved tag with no image; the next PR simply bumps past
   it. A "tag already exists" guard means versions are never reused.
 - **Concurrent-PR version race** is prevented by the PR up-to-date check plus the
   branch-protection rule "Require branches to be up to date before merging".
-- **Caveat:** because the bump commit is pushed with `GITHUB_TOKEN`, `pr.yml` does
-  not re-run on that final SHA, so its status won't reappear there. Merge as admin,
-  or (future) push the bump with a PAT/GitHub App so checks re-run and converge
-  (the bump step is already idempotent).
+- **Caveat — required check on head SHA:** after the bot bump, the PR head is the
+  bot commit and `pr.yml` deliberately does not re-run there, so the required check
+  status won't appear on that final SHA. Merge as admin (Option A), or (future) push
+  the bump with a PAT/GitHub App so checks re-run and converge (Option B; the bump
+  step is already idempotent).
 
 **Secrets — GitHub OIDC → AWS SSM, Docker Hub kept.**
 
