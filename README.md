@@ -136,3 +136,48 @@ Run the deployment with a service account bound to a ClusterRole granting
 `rbac.yaml`) so discovery can read Ingress resources cluster-wide, and expose
 port `8080`. Preserve the client source IP (e.g. `externalTrafficPolicy: Local`
 or an ingress that sets `X-Forwarded-For`) so the private-network detection works.
+
+## CI/CD
+
+GitHub Actions build, version, and publish the image. `pom.xml`'s `<version>` is
+the **single source of truth**; each release is marked by a git tag of the same
+value (e.g. `2.0.0`, no `v` prefix), and the image is published to Docker Hub as
+`sbwise/wise-home-index:<version>`.
+
+Both workflows are scoped to source changes (`src/**`, `Dockerfile`,
+`.dockerignore`, `pom.xml`). Metadata-only changes (docs, `LICENSE`, workflow
+edits, etc.) don't test, version, or release.
+
+### On a pull request — `.github/workflows/pr.yml`
+
+1. Fails unless the branch is up to date with `main`.
+2. Requires `main`'s current `pom.xml` version to already be released (a matching
+   git tag exists) — this is the baseline the version is bumped from.
+3. Validates the **PR title** as a [Conventional Commit](https://www.conventionalcommits.org/)
+   and derives the bump: `feat!` / `BREAKING CHANGE:` → **major**, `feat` →
+   **minor**, anything else (`fix`, `chore`, `docs`, …) → **patch**.
+4. Runs the Docker test build (`--target build`, i.e. `mvn clean package`).
+5. Computes the next version and commits the bumped `pom.xml` back to the PR
+   branch automatically.
+
+So **name PRs as Conventional Commits** (`feat: …`, `fix(scope): …`, `feat!: …`)
+and let CI set the version — do not hand-edit `<version>`.
+
+### On merge to `main` — `.github/workflows/release.yml`
+
+1. Reads the version from `pom.xml`.
+2. Creates and pushes the git tag on the merge commit (this reserves the version;
+   if the build/push then fails, that version is burned and never reused).
+3. Authenticates to Docker Hub via GitHub OIDC — assumes the AWS `dockerhub-role`
+   and reads the registry credentials from SSM at runtime, so no long-lived
+   Docker Hub secret is stored in GitHub.
+4. Builds and pushes `sbwise/wise-home-index:<version>`.
+
+Deploying the new tag to the cluster is handled separately by FluxCD image update
+automation, not by this pipeline.
+
+### Repo settings
+
+Enable branch protection on `main`: require the `pr.yml` check **and** "Require
+branches to be up to date before merging" (this serializes version numbers across
+concurrent PRs).
