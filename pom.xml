@@ -18,7 +18,7 @@
 
         <jersey.version>3.1.5</jersey.version>
         <jackson.version>2.16.1</jackson.version>
-        <snakeyaml.version>2.2</snakeyaml.version>
+        <kubernetes.client.version>27.0.0</kubernetes.client.version>
         <jakarta.servlet.version>6.0.0</jakarta.servlet.version>
         <junit.version>5.10.1</junit.version>
     </properties>
@@ -49,11 +49,11 @@
             <version>${jersey.version}</version>
         </dependency>
 
-        <!-- YAML configuration parsing -->
+        <!-- Kubernetes API client: discovers applications from Ingress resources -->
         <dependency>
-            <groupId>org.yaml</groupId>
-            <artifactId>snakeyaml</artifactId>
-            <version>${snakeyaml.version}</version>
+            <groupId>io.kubernetes</groupId>
+            <artifactId>client-java</artifactId>
+            <version>${kubernetes.client.version}</version>
         </dependency>
 
         <!-- Tests -->

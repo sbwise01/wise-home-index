@@ -60,11 +60,17 @@ final class HtmlRenderer {
                 : DEFAULT_IMAGE;
         String visibilityClass = app.isPublic() ? "tile-public" : "tile-private";
         String visibilityLabel = app.isPublic() ? "public" : "private";
+        boolean hasDescription = app.getDescription() != null && !app.getDescription().isBlank();
+        String titleAttr = hasDescription ? " title=\"" + escapeAttr(app.getDescription().trim()) + "\"" : "";
+        String descriptionSpan = hasDescription
+                ? "      <span class=\"tile-description\">" + escapeText(app.getDescription().trim()) + "</span>\n"
+                : "";
 
-        return "    <a class=\"tile " + visibilityClass + "\" href=\"" + escapeAttr(app.getUrl()) + "\">\n"
+        return "    <a class=\"tile " + visibilityClass + "\" href=\"" + escapeAttr(app.getUrl()) + "\"" + titleAttr + ">\n"
                 + "      <img class=\"tile-image\" src=\"" + escapeAttr(image) + "\" alt=\"" + escapeAttr(app.getName()) + " logo\" "
                 + "onerror=\"this.onerror=null;this.src='" + DEFAULT_IMAGE + "';\">\n"
                 + "      <span class=\"tile-name\">" + escapeText(app.getName()) + "</span>\n"
+                + descriptionSpan
                 + "      <span class=\"tile-visibility\">" + visibilityLabel + "</span>\n"
                 + "    </a>\n";
     }
@@ -139,6 +145,12 @@ final class HtmlRenderer {
                   border-radius: 12px;
                 }
                 .tile-name { font-weight: 600; text-align: center; }
+                .tile-description {
+                  font-size: 0.75rem;
+                  color: var(--muted);
+                  text-align: center;
+                  line-height: 1.3;
+                }
                 .tile-visibility {
                   position: absolute;
                   top: 0.6rem;

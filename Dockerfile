@@ -22,9 +22,9 @@ RUN rm -rf /usr/local/tomcat/webapps/*
 # Deploy as ROOT so the index page is served from "/".
 COPY --from=build /workspace/target/wise-home-index.war /usr/local/tomcat/webapps/ROOT.war
 
-# Default location for a mounted configuration file. Override by mounting a YAML
-# file here, or by setting WISE_HOME_INDEX_CONFIG to a different path.
-ENV WISE_HOME_INDEX_CONFIG=/config/applications.yaml
+# Applications are discovered from Kubernetes Ingress resources at runtime using
+# the in-cluster service account (see the RBAC in the wise-k8s deployment). No
+# static configuration file is required.
 
 EXPOSE 8080
 

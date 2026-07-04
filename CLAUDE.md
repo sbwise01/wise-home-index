@@ -7,25 +7,32 @@ request's network origin.
 ## What it does
 
 - Serves an HTML index page of homelab applications as clickable tiles.
+- **Discovers applications automatically from Kubernetes `Ingress` resources**
+  (cluster-wide) — there is no static application list. An ingress opts in with
+  the annotation `index.home.bradandmarsha.com/enabled: "true"`.
 - Filters visible applications by request origin:
- - Requests from the private LAN see **public and private** URLs.
+ - Requests from the private LAN see **public and private** apps.
  - Requests whose client IP matches a current public IP of the home host
    (`home.bradandmarsha.com`, e.g. LAN clients arriving via hairpin NAT) also see
-   **public and private** URLs.
- - All other (internet) requests see **public URLs only**.
-- URL classification (derived automatically from each URL):
-  - **Public**  = sub-domains of `home.bradandmarsha.com`.
-  - **Private** = short names.
-- Reads the application list from a YAML file; each entry has a required `name`
-  and `url`, plus an optional `image`. Entries without an image fall back to a
-  bundled default tile.
+   **public and private** apps.
+ - All other (internet) requests see **public apps only**.
+- Public vs private classification (derived from the ingress class):
+  - **Public**  = ingress class `nginx`.
+  - **Private** = ingress class `nginx-internal`.
+  - Any other/absent class is treated as **private** (never exposed publicly).
+- Each app is built from the ingress `index.home.bradandmarsha.com/*` annotations
+  (`name` required; `image`, `description`, `weight` optional) and its host
+  (URL = `https://<host>` when TLS is present, else `http://<host>`). Tiles are
+  ordered by `weight` ascending (lower first), then name. Apps without an image
+  fall back to a bundled default tile.
 
 ## Tech stack
 
 - **Java 17**, packaged as a WAR with **Maven** (`war` packaging).
 - **JAX-RS via Jersey 3.1** (Jakarta namespace) for the REST layer.
 - **Apache Tomcat 10.1** as the servlet container / web server.
-- **SnakeYAML** for configuration parsing; **Jackson** for JSON responses.
+- **Kubernetes Java client** (`io.kubernetes:client-java`) for Ingress discovery;
+  **Jackson** for JSON responses.
 - Containerized with a multi-stage **Dockerfile** (Maven build → Tomcat runtime),
   deployed as `ROOT.war` so the index page is served from `/`.
 
@@ -43,20 +50,22 @@ request's network origin.
 pom.xml                          Maven build (war packaging, JDK 17)
 Dockerfile                       Multi-stage build + Tomcat runtime
 src/main/java/com/bradandmarsha/wisehomeindex/
-  config/ConfigLoader.java       Resolves + parses + validates the YAML config
-  model/ApplicationEntry.java    One application; isPublic() classifies the URL
-  model/IndexConfig.java         Root YAML object ({ applications: [...] })
-  service/IndexService.java      Holds config; filters apps by visibility scope
-  util/NetworkUtil.java          Client-IP resolution + 192.168.0.0/24 check
-  rest/JaxRsApplication.java     Jersey ResourceConfig; binds IndexService
-  rest/IndexResource.java        GET /  -> HTML
-  rest/HtmlRenderer.java         Builds the index page HTML (no template engine)
-  rest/ApplicationResource.java  GET /api/applications -> JSON
-  rest/HealthResource.java       GET /health -> JSON
-src/main/resources/applications.yaml   Bundled sample config (fallback)
+  model/ApplicationEntry.java         One application (name/url/image/description/weight/public)
+  discovery/ApplicationSource.java    Interface: supplies ordered applications
+  discovery/DiscoverySettings.java    Annotation prefix, ingress classes, refresh interval
+  discovery/IngressMapper.java        Pure Ingress -> ApplicationEntry mapping (client-agnostic)
+  discovery/IngressApplicationSource.java  Lists Ingresses via k8s API; caches with TTL
+  service/IndexService.java           Filters discovered apps by visibility scope
+  util/NetworkUtil.java               Client-IP resolution + 192.168.0.0/24 check
+  rest/JaxRsApplication.java          Jersey ResourceConfig; binds IndexService
+  rest/IndexResource.java             GET /  -> HTML
+  rest/HtmlRenderer.java              Builds the index page HTML (no template engine)
+  rest/ApplicationResource.java       GET /api/applications -> JSON
+  rest/HealthResource.java            GET /health -> JSON
 src/main/webapp/WEB-INF/web.xml        Jersey servlet filter (forwardOn404)
 src/main/webapp/images/default-tile.svg Default tile image
 src/test/java/.../NetworkUtilTest.java  Subnet classification tests
+src/test/java/.../IngressMapperTest.java Ingress annotation/class mapping tests
 src/test/java/.../IndexServiceTest.java Visibility-filtering tests
 ```
 
@@ -77,8 +86,19 @@ src/test/java/.../IndexServiceTest.java Visibility-filtering tests
    transient DNS failure keeps the last-known IPs. The matching core is the
    package-private `NetworkUtil.matchesPublicHostIp(ip, trustedSet)`, which takes
    an injected IP set so it can be unit-tested without real DNS.
-- **Public vs private** is decided per URL in `ApplicationEntry.isPublic()`:
-  the host must equal or be a sub-domain of `home.bradandmarsha.com`.
+- **Application discovery** lives in the `discovery` package. `IngressApplicationSource`
+  lists `Ingress` resources across all namespaces via the Kubernetes API and maps
+  the opted-in ones to `ApplicationEntry`. The Kubernetes client is created with
+  `ClientBuilder.standard()`, which uses the in-cluster service account when running
+  in Kubernetes and falls back to the local kubeconfig for development. Results are
+  cached for a configurable interval (default 5 minutes) and refreshed lazily on the
+  first request after expiry; if a refresh fails (transient API error, or no cluster) the
+  last-known list is retained and the page keeps serving. The pure mapping logic is
+  in `IngressMapper` (client-agnostic, unit-tested without a live cluster).
+- **Public vs private** is decided by the ingress class in `IngressMapper`
+  (`nginx` -> public, `nginx-internal` -> private; unknown -> private) and stored on
+  `ApplicationEntry.isPublic()`. The class is read from `spec.ingressClassName`,
+  falling back to the deprecated `kubernetes.io/ingress.class` annotation.
 - **Static assets** (the default tile) are served by Tomcat's default servlet.
   Jersey is registered as a *filter* with
   `jersey.config.servlet.filter.forwardOn404=true` so unmatched paths fall
@@ -86,28 +106,38 @@ src/test/java/.../IndexServiceTest.java Visibility-filtering tests
 
 ## Configuration
 
-The YAML config path is resolved in this order:
+Applications are discovered from the cluster; there is no config file. Discovery
+behavior is tunable (each: system property, then environment variable, then default):
 
-1. System property `wise.home.index.config`
-2. Environment variable `WISE_HOME_INDEX_CONFIG`
-3. Bundled `applications.yaml` (used if neither is set or the path is unreadable)
+| Setting              | System property                          | Env variable                          | Default                        |
+| -------------------- | ---------------------------------------- | ------------------------------------- | ------------------------------ |
+| Annotation prefix    | `wise.home.index.annotation.prefix`      | `WISE_HOME_INDEX_ANNOTATION_PREFIX`   | `index.home.bradandmarsha.com` |
+| Public ingress class | `wise.home.index.ingress.class.public`   | `WISE_HOME_INDEX_INGRESS_CLASS_PUBLIC`| `nginx`                        |
+| Private ingress class| `wise.home.index.ingress.class.private`  | `WISE_HOME_INDEX_INGRESS_CLASS_PRIVATE`| `nginx-internal`              |
+| Refresh interval (s) | `wise.home.index.refresh.seconds`        | `WISE_HOME_INDEX_REFRESH_SECONDS`     | `300`                          |
 
-The trusted private subnet is resolved similarly (system property
-`wise.home.index.private.cidr`, then env var `WISE_HOME_INDEX_PRIVATE_CIDR`,
-then the `192.168.0.0/24` default).
+The trusted private subnet (system property `wise.home.index.private.cidr`, then
+env var `WISE_HOME_INDEX_PRIVATE_CIDR`, then `192.168.0.0/24`) and the trusted home
+host (`wise.home.index.public.host` / `WISE_HOME_INDEX_PUBLIC_HOST` /
+`home.bradandmarsha.com`) are resolved the same way.
 
-The trusted home host is resolved the same way (system property
-`wise.home.index.public.host`, then env var `WISE_HOME_INDEX_PUBLIC_HOST`, then
-the `home.bradandmarsha.com` default).
+Recognized ingress annotations (with the default prefix):
 
 ```yaml
-applications:
-  - name: Grafana
-    url: https://grafana.home.bradandmarsha.com   # public (subdomain)
-    image: https://grafana.home.bradandmarsha.com/public/img/grafana_icon.svg
-  - name: Ceph Dashboard
-    url: https://ceph-dashboard                   # private (short name)
+metadata:
+  annotations:
+    index.home.bradandmarsha.com/enabled: "true"          # required to be shown
+    index.home.bradandmarsha.com/name: "Grafana Dashboard" # required
+    index.home.bradandmarsha.com/image: "https://.../grafana.jpg"  # optional
+    index.home.bradandmarsha.com/description: "Metrics dashboards"  # optional
+    index.home.bradandmarsha.com/weight: "40"              # optional (sort order)
+spec:
+  ingressClassName: nginx           # public   (nginx-internal => private)
 ```
+
+The Kubernetes API access requires RBAC granting `get/list/watch` on
+`networking.k8s.io/ingresses` to the `wise-home-index` service account (defined in
+the wise-k8s deployment's `rbac.yaml`).
 
 ## Build & run
 
@@ -117,18 +147,20 @@ mvn clean package
 
 # Docker (no local JDK/Maven needed)
 docker build --platform linux/amd64 -t sbwise/wise-home-index .
-docker run --rm -p 8080:8080 sbwise/wise-home-index                # bundled sample config
+
+# In-cluster: relies on the mounted service-account token (no extra config).
+# Local dev against a cluster: mount your kubeconfig so ClientBuilder can find it.
 docker run --rm -p 8080:8080 \
   -e WISE_HOME_INDEX_PRIVATE_CIDR="192.168.40.0/24" \
   -e WISE_HOME_INDEX_PUBLIC_HOST="home.bradandmarsha.com" \
-  -v "$(pwd)/my-apps.yaml:/config/applications.yaml:ro" \
-  sbwise/wise-home-index                                           # custom config
+  -v "$HOME/.kube:/root/.kube:ro" -e KUBECONFIG=/root/.kube/config \
+  sbwise/wise-home-index
 
 # then open http://localhost:8080/
 ```
 
-The image's default `WISE_HOME_INDEX_CONFIG=/config/applications.yaml` is the
-conventional mount point for a Kubernetes `ConfigMap`.
+Without a reachable cluster the app still starts and serves an empty index
+(logging a warning) until discovery succeeds.
 
 ## Notes for future changes
 
@@ -137,3 +169,5 @@ conventional mount point for a Kubernetes `ConfigMap`.
   user-supplied values are HTML-escaped; preserve that when editing.
 - Private-network detection depends on seeing the real client IP; deployments
   must preserve it (ingress `X-Forwarded-For`, or `externalTrafficPolicy: Local`).
+- Discovery needs the ingress RBAC ClusterRole/Binding; keep them in sync with the
+  service account when changing namespaces or resource scope.

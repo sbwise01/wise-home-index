@@ -1,84 +1,64 @@
 package com.bradandmarsha.wisehomeindex.model;
 
-import java.net.URI;
-
 /**
  * A single application to display on the index page.
  *
- * <p>Backed by the YAML configuration. {@code name} and {@code url} are required;
- * {@code image} is optional and falls back to a default tile image when absent.</p>
+ * <p>Instances are discovered from Kubernetes {@code Ingress} resources. Each
+ * field is populated from the {@code index.home.bradandmarsha.com/*} annotations
+ * on the ingress, except for {@code url} (derived from the ingress host) and the
+ * public/private visibility (derived from the ingress class).</p>
+ *
+ * <p>{@code name} and {@code url} are always present; {@code image} and
+ * {@code description} are optional. {@code weight} controls display ordering
+ * (ascending, lower first).</p>
  */
 public class ApplicationEntry {
 
-    private String name;
-    private String url;
-    private String image;
+    private final String name;
+    private final String url;
+    private final String image;
+    private final String description;
+    private final int weight;
+    private final boolean publicApp;
 
-    public ApplicationEntry() {
-    }
-
-    public ApplicationEntry(String name, String url, String image) {
+    public ApplicationEntry(String name, String url, String image, String description, int weight, boolean publicApp) {
         this.name = name;
         this.url = url;
         this.image = image;
+        this.description = description;
+        this.weight = weight;
+        this.publicApp = publicApp;
     }
 
     public String getName() {
         return name;
     }
 
-    public void setName(String name) {
-        this.name = name;
-    }
-
     public String getUrl() {
         return url;
-    }
-
-    public void setUrl(String url) {
-        this.url = url;
     }
 
     public String getImage() {
         return image;
     }
 
-    public void setImage(String image) {
-        this.image = image;
+    public String getDescription() {
+        return description;
+    }
+
+    public int getWeight() {
+        return weight;
     }
 
     /**
-     * Public applications are always sub-domains of {@code home.bradandmarsha.com}.
-     * Everything else (short names like {@code ceph-dashboard}) is treated as private.
+     * Whether this application is publicly visible. Determined by the ingress
+     * class of the originating {@code Ingress}: the public class (e.g.
+     * {@code nginx}) maps to {@code true}, and the private/internal class (e.g.
+     * {@code nginx-internal}) maps to {@code false}.
      *
-     * @return {@code true} when this entry resolves to a public, internet-facing URL
+     * @return {@code true} when this entry should be shown to internet callers
      */
     public boolean isPublic() {
-        String host = extractHost(url);
-        if (host == null) {
-            return false;
-        }
-        host = host.toLowerCase();
-        return host.equals(PUBLIC_DOMAIN) || host.endsWith("." + PUBLIC_DOMAIN);
-    }
-
-    private static final String PUBLIC_DOMAIN = "home.bradandmarsha.com";
-
-    private static String extractHost(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        String candidate = value.trim();
-        try {
-            if (candidate.contains("://")) {
-                return URI.create(candidate).getHost();
-            }
-            // No scheme: parse it as an authority by prepending one.
-            URI uri = URI.create("//" + candidate);
-            String host = uri.getHost();
-            return host != null ? host : candidate.split("[/?#]", 2)[0];
-        } catch (IllegalArgumentException ex) {
-            return candidate.split("[/?#]", 2)[0];
-        }
+        return publicApp;
     }
 }

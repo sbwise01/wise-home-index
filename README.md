@@ -8,33 +8,59 @@ where the request comes from:
 
 | Request origin                          | Shows                          |
 | --------------------------------------- | ------------------------------ |
-| Private LAN                             | public **and** private URLs    |
-| The home host's public IP (hairpin NAT) | public **and** private URLs    |
-| Anywhere else (internet)                | public URLs only               |
+| Private LAN                             | public **and** private apps    |
+| The home host's public IP (hairpin NAT) | public **and** private apps    |
+| Anywhere else (internet)                | public apps only               |
 
-* **Public URLs** are sub-domains of `home.bradandmarsha.com`.
-* **Private URLs** are short names.
+* **Public apps** are served through the `nginx` ingress class.
+* **Private apps** are served through the `nginx-internal` ingress class.
 
-Applications are described in a YAML file. Each entry needs a `name` and a
-`url`; an `image` is optional and falls back to a default tile.
+## Application discovery
 
-## Configuration
+Applications are discovered automatically from Kubernetes `Ingress` resources
+across all namespaces — there is no static config file. An ingress opts in by
+setting `index.home.bradandmarsha.com/enabled: "true"` and describes its tile via
+annotations:
 
 ```yaml
-applications:
-  - name: Grafana
-    url: https://grafana.home.bradandmarsha.com   # public (subdomain)
-    image: https://grafana.home.bradandmarsha.com/public/img/grafana_icon.svg
-  - name: My Dashboard
-    url: https://my-dashboard                     # private (short name)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    index.home.bradandmarsha.com/enabled: "true"                    # required
+    index.home.bradandmarsha.com/name: "Grafana Dashboard"          # required
+    index.home.bradandmarsha.com/image: "https://.../grafana.jpg"   # optional
+    index.home.bradandmarsha.com/description: "Metrics dashboards"   # optional
+    index.home.bradandmarsha.com/weight: "40"                       # optional, sort order
+spec:
+  ingressClassName: nginx           # public; use nginx-internal for private
+  rules:
+    - host: grafana-dashboard.home.bradandmarsha.com
 ```
 
-The configuration file is resolved in this order:
+* The tile **URL** is derived from the ingress host (`https://<host>` when TLS is
+  configured, otherwise `http://<host>`).
+* **Visibility** comes from the ingress class: `nginx` → public,
+  `nginx-internal` → private. Any other/absent class is treated as private.
+* Tiles are ordered by `weight` ascending (lower first), then by name.
+* An enabled ingress missing `name` or a usable host is skipped (with a warning).
 
-1. System property `wise.home.index.config`
-2. Environment variable `WISE_HOME_INDEX_CONFIG`
-3. The bundled sample `applications.yaml` (used if neither of the above is set
-   or the configured path is not readable)
+The Kubernetes API client is created with `ClientBuilder.standard()`: it uses the
+in-cluster service account when running in Kubernetes, and falls back to the local
+kubeconfig for development. Results are cached and refreshed on an interval
+(default 5 minutes); if the cluster is unreachable the last-known list is kept and
+the page still serves.
+
+### Discovery settings
+
+Each is resolved as: system property, then environment variable, then default.
+
+| Setting               | System property                         | Env variable                            | Default                        |
+| --------------------- | --------------------------------------- | --------------------------------------- | ------------------------------ |
+| Annotation prefix     | `wise.home.index.annotation.prefix`     | `WISE_HOME_INDEX_ANNOTATION_PREFIX`     | `index.home.bradandmarsha.com` |
+| Public ingress class  | `wise.home.index.ingress.class.public`  | `WISE_HOME_INDEX_INGRESS_CLASS_PUBLIC`  | `nginx`                        |
+| Private ingress class | `wise.home.index.ingress.class.private` | `WISE_HOME_INDEX_INGRESS_CLASS_PRIVATE` | `nginx-internal`               |
+| Refresh interval (s)  | `wise.home.index.refresh.seconds`       | `WISE_HOME_INDEX_REFRESH_SECONDS`       | `300`                          |
 
 ### Trusted request origins
 
@@ -84,16 +110,16 @@ mvn clean package
 # Build the image (multi-stage: Maven build + Tomcat runtime)
 docker build --platform linux/amd64 -t sbwise/wise-home-index .
 
-# Run with the bundled sample config
-docker run --rm -p 8080:8080 sbwise/wise-home-index
-
-# Run with your own config mounted at the default location
+# Local dev against a cluster: mount your kubeconfig so discovery can reach it
 docker run --rm -p 8080:8080 \
   -e WISE_HOME_INDEX_PRIVATE_CIDR="192.168.40.0/24" \
   -e WISE_HOME_INDEX_PUBLIC_HOST="home.bradandmarsha.com" \
-  -v "$(pwd)/my-applications.yaml:/config/applications.yaml:ro" \
+  -v "$HOME/.kube:/root/.kube:ro" -e KUBECONFIG=/root/.kube/config \
   sbwise/wise-home-index
 ```
+
+Without a reachable cluster the app still starts and serves an empty index
+(logging a warning) until discovery succeeds.
 
 Then open <http://localhost:8080/>.
 
@@ -105,7 +131,8 @@ Then open <http://localhost:8080/>.
 
 ## Deploy on Kubernetes
 
-Mount the application map from a `ConfigMap` at `/config/applications.yaml` (the
-image's default `WISE_HOME_INDEX_CONFIG` path) and expose port `8080`. Preserve
-the client source IP (e.g. `externalTrafficPolicy: Local` or an ingress that
-sets `X-Forwarded-For`) so the private-network detection works.
+Run the deployment with a service account bound to a ClusterRole granting
+`get/list/watch` on `networking.k8s.io/ingresses` (see the wise-k8s deployment's
+`rbac.yaml`) so discovery can read Ingress resources cluster-wide, and expose
+port `8080`. Preserve the client source IP (e.g. `externalTrafficPolicy: Local`
+or an ingress that sets `X-Forwarded-For`) so the private-network detection works.
