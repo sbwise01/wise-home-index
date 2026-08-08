@@ -12,15 +12,15 @@ where the request comes from:
 | The home host's public IP (hairpin NAT) | public **and** private apps    |
 | Anywhere else (internet)                | public apps only               |
 
-* **Public apps** are served through the `nginx` ingress class.
-* **Private apps** are served through the `nginx-internal` ingress class.
+* **Public apps** use the `nginx` ingress class and/or parent Gateway `gateway-public`.
+* **Private apps** use the `nginx-internal` ingress class and/or parent Gateway `gateway-internal`.
 
 ## Application discovery
 
-Applications are discovered automatically from Kubernetes `Ingress` resources
-across all namespaces — there is no static config file. An ingress opts in by
-setting `index.home.bradandmarsha.com/enabled: "true"` and describes its tile via
-annotations:
+Applications are discovered automatically from Kubernetes `Ingress` **and**
+Gateway API `HTTPRoute` resources across all namespaces — there is no static
+config file. A resource opts in with `index.home.bradandmarsha.com/enabled: "true"`
+and describes its tile via the same annotations:
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -38,12 +38,31 @@ spec:
     - host: grafana-dashboard.home.bradandmarsha.com
 ```
 
-* The tile **URL** is derived from the ingress host (`https://<host>` when TLS is
-  configured, otherwise `http://<host>`).
-* **Visibility** comes from the ingress class: `nginx` → public,
-  `nginx-internal` → private. Any other/absent class is treated as private.
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  annotations:
+    index.home.bradandmarsha.com/enabled: "true"
+    index.home.bradandmarsha.com/name: "Flask Hello World"
+    index.home.bradandmarsha.com/weight: "20"
+spec:
+  parentRefs:
+    - name: gateway-public
+      namespace: kgateway-system
+      sectionName: https-flask-hello-world
+  hostnames:
+    - flask-hello-world.home.bradandmarsha.com
+```
+
+* The tile **URL** is derived from the Ingress host or HTTPRoute `spec.hostnames`
+  (`https://` when TLS / an `https*` listener section is present).
+* **Visibility** comes from ingress class (`nginx` / `nginx-internal`) or from the
+  HTTPRoute parent Gateway name (`gateway-public` / `gateway-internal`). Unknown
+  → private.
+* During dual-run (same host on Ingress and HTTPRoute), the **HTTPRoute** tile wins.
 * Tiles are ordered by `weight` ascending (lower first), then by name.
-* An enabled ingress missing `name` or a usable host is skipped (with a warning).
+* An enabled resource missing `name` or a usable host is skipped (with a warning).
 
 The Kubernetes API client is created with `ClientBuilder.standard()`: it uses the
 in-cluster service account when running in Kubernetes, and falls back to the local
@@ -60,6 +79,8 @@ Each is resolved as: system property, then environment variable, then default.
 | Annotation prefix     | `wise.home.index.annotation.prefix`     | `WISE_HOME_INDEX_ANNOTATION_PREFIX`     | `index.home.bradandmarsha.com` |
 | Public ingress class  | `wise.home.index.ingress.class.public`  | `WISE_HOME_INDEX_INGRESS_CLASS_PUBLIC`  | `nginx`                        |
 | Private ingress class | `wise.home.index.ingress.class.private` | `WISE_HOME_INDEX_INGRESS_CLASS_PRIVATE` | `nginx-internal`               |
+| Public gateway name   | `wise.home.index.gateway.public`        | `WISE_HOME_INDEX_GATEWAY_PUBLIC`        | `gateway-public`               |
+| Private gateway name  | `wise.home.index.gateway.private`       | `WISE_HOME_INDEX_GATEWAY_PRIVATE`       | `gateway-internal`             |
 | Refresh interval (s)  | `wise.home.index.refresh.seconds`       | `WISE_HOME_INDEX_REFRESH_SECONDS`       | `300`                          |
 
 ### Trusted request origins
@@ -132,7 +153,8 @@ Then open <http://localhost:8080/>.
 ## Deploy on Kubernetes
 
 Run the deployment with a service account bound to a ClusterRole granting
-`get/list/watch` on `networking.k8s.io/ingresses` (see the wise-k8s deployment's
+`get/list/watch` on `networking.k8s.io/ingresses` and
+`gateway.networking.k8s.io` `httproutes` (see the wise-k8s deployment's
 `rbac.yaml`) so discovery can read Ingress resources cluster-wide, and expose
 port `8080`. Preserve the client source IP (e.g. `externalTrafficPolicy: Local`
 or an ingress that sets `X-Forwarded-For`) so the private-network detection works.

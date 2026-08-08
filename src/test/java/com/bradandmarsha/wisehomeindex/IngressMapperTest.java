@@ -20,7 +20,8 @@ class IngressMapperTest {
     private static final String PREFIX = "index.home.bradandmarsha.com";
 
     private final IngressMapper mapper = new IngressMapper(
-            new DiscoverySettings(PREFIX, "nginx", "nginx-internal", Duration.ofSeconds(30)));
+            new DiscoverySettings(PREFIX, "nginx", "nginx-internal",
+                    "gateway-public", "gateway-internal", Duration.ofSeconds(30)));
 
     private static Map<String, String> annotations(String... kv) {
         Map<String, String> map = new java.util.HashMap<>();

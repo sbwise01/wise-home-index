@@ -7,9 +7,9 @@ request's network origin.
 ## What it does
 
 - Serves an HTML index page of homelab applications as clickable tiles.
-- **Discovers applications automatically from Kubernetes `Ingress` resources**
-  (cluster-wide) — there is no static application list. An ingress opts in with
-  the annotation `index.home.bradandmarsha.com/enabled: "true"`.
+- **Discovers applications automatically from Kubernetes `Ingress` and Gateway API
+  `HTTPRoute` resources** (cluster-wide) — there is no static application list.
+  A resource opts in with `index.home.bradandmarsha.com/enabled: "true"`.
 - Filters visible applications by request origin:
  - Requests from the private LAN see **public and private** apps.
  - Requests whose client IP matches a current public IP of the home host
@@ -52,9 +52,12 @@ Dockerfile                       Multi-stage build + Tomcat runtime
 src/main/java/com/bradandmarsha/wisehomeindex/
   model/ApplicationEntry.java         One application (name/url/image/description/weight/public)
   discovery/ApplicationSource.java    Interface: supplies ordered applications
-  discovery/DiscoverySettings.java    Annotation prefix, ingress classes, refresh interval
+  discovery/DiscoverySettings.java    Annotation prefix, ingress/gateway names, refresh
   discovery/IngressMapper.java        Pure Ingress -> ApplicationEntry mapping (client-agnostic)
   discovery/IngressApplicationSource.java  Lists Ingresses via k8s API; caches with TTL
+  discovery/HttpRouteMapper.java      Pure HTTPRoute -> ApplicationEntry mapping
+  discovery/HttpRouteApplicationSource.java  Lists HTTPRoutes via CustomObjects API
+  discovery/CompositeApplicationSource.java  Merges sources; HTTPRoute wins on host dual-run
   service/IndexService.java           Filters discovered apps by visibility scope
   util/NetworkUtil.java               Client-IP resolution + 192.168.0.0/24 check
   rest/JaxRsApplication.java          Jersey ResourceConfig; binds IndexService
@@ -86,19 +89,15 @@ src/test/java/.../IndexServiceTest.java Visibility-filtering tests
    transient DNS failure keeps the last-known IPs. The matching core is the
    package-private `NetworkUtil.matchesPublicHostIp(ip, trustedSet)`, which takes
    an injected IP set so it can be unit-tested without real DNS.
-- **Application discovery** lives in the `discovery` package. `IngressApplicationSource`
-  lists `Ingress` resources across all namespaces via the Kubernetes API and maps
-  the opted-in ones to `ApplicationEntry`. The Kubernetes client is created with
-  `ClientBuilder.standard()`, which uses the in-cluster service account when running
-  in Kubernetes and falls back to the local kubeconfig for development. Results are
-  cached for a configurable interval (default 5 minutes) and refreshed lazily on the
-  first request after expiry; if a refresh fails (transient API error, or no cluster) the
-  last-known list is retained and the page keeps serving. The pure mapping logic is
-  in `IngressMapper` (client-agnostic, unit-tested without a live cluster).
-- **Public vs private** is decided by the ingress class in `IngressMapper`
-  (`nginx` -> public, `nginx-internal` -> private; unknown -> private) and stored on
-  `ApplicationEntry.isPublic()`. The class is read from `spec.ingressClassName`,
-  falling back to the deprecated `kubernetes.io/ingress.class` annotation.
+- **Application discovery** lives in the `discovery` package. `JaxRsApplication`
+  wires a `CompositeApplicationSource` over `IngressApplicationSource` and
+  `HttpRouteApplicationSource`. HTTPRoutes are listed via `CustomObjectsApi`
+  (`gateway.networking.k8s.io/v1`). On the same host, the HTTPRoute entry wins
+  (Ingress dual-run). Caching/failure behavior matches the prior Ingress-only
+  source. Pure mapping is in `IngressMapper` / `HttpRouteMapper`.
+- **Public vs private** is decided by ingress class (`nginx` / `nginx-internal`)
+  or HTTPRoute parent Gateway name (`gateway-public` / `gateway-internal`);
+  unknown → private. Stored on `ApplicationEntry.isPublic()`.
 - **Static assets** (the default tile) are served by Tomcat's default servlet.
   Jersey is registered as a *filter* with
   `jersey.config.servlet.filter.forwardOn404=true` so unmatched paths fall
