@@ -10,8 +10,8 @@ import java.util.List;
  * scope determined from the request context.
  *
  * <p>The underlying data is supplied by an {@link ApplicationSource} (discovered
- * from Kubernetes {@code Ingress} resources in production) and is already ordered
- * for presentation; filtering preserves that order.</p>
+ * from Kubernetes {@code Ingress} and {@code HTTPRoute} resources in production)
+ * and is already ordered for presentation; filtering preserves that order.</p>
  */
 public class IndexService {
 

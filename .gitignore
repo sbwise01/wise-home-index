@@ -28,3 +28,5 @@ replay_pid*
 
 # local test files
 my-applications.yaml
+
+target/

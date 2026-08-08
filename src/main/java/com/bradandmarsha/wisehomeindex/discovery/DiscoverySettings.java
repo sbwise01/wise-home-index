@@ -5,7 +5,7 @@ import java.util.logging.Logger;
 
 /**
  * Configuration for discovering applications from Kubernetes {@code Ingress}
- * resources.
+ * and Gateway API {@code HTTPRoute} resources.
  *
  * <p>All values have sensible defaults and can be overridden (in this order of
  * precedence) by a system property, then an environment variable:</p>
@@ -19,8 +19,12 @@ import java.util.logging.Logger;
  *       <td>{@code WISE_HOME_INDEX_INGRESS_CLASS_PUBLIC}</td><td>{@code nginx}</td></tr>
  *   <tr><td>Private ingress class</td><td>{@code wise.home.index.ingress.class.private}</td>
  *       <td>{@code WISE_HOME_INDEX_INGRESS_CLASS_PRIVATE}</td><td>{@code nginx-internal}</td></tr>
+ *   <tr><td>Public gateway name</td><td>{@code wise.home.index.gateway.public}</td>
+ *       <td>{@code WISE_HOME_INDEX_GATEWAY_PUBLIC}</td><td>{@code gateway-public}</td></tr>
+ *   <tr><td>Private gateway name</td><td>{@code wise.home.index.gateway.private}</td>
+ *       <td>{@code WISE_HOME_INDEX_GATEWAY_PRIVATE}</td><td>{@code gateway-internal}</td></tr>
  *   <tr><td>Refresh interval (seconds)</td><td>{@code wise.home.index.refresh.seconds}</td>
- *       <td>{@code WISE_HOME_INDEX_REFRESH_SECONDS}</td><td>{@code 30}</td></tr>
+ *       <td>{@code WISE_HOME_INDEX_REFRESH_SECONDS}</td><td>{@code 300}</td></tr>
  * </table>
  *
  * <p>The annotation suffixes are fixed: {@code /enabled}, {@code /name},
@@ -42,6 +46,14 @@ public final class DiscoverySettings {
     public static final String PRIVATE_CLASS_ENV = "WISE_HOME_INDEX_INGRESS_CLASS_PRIVATE";
     public static final String DEFAULT_PRIVATE_CLASS = "nginx-internal";
 
+    public static final String PUBLIC_GATEWAY_PROPERTY = "wise.home.index.gateway.public";
+    public static final String PUBLIC_GATEWAY_ENV = "WISE_HOME_INDEX_GATEWAY_PUBLIC";
+    public static final String DEFAULT_PUBLIC_GATEWAY = "gateway-public";
+
+    public static final String PRIVATE_GATEWAY_PROPERTY = "wise.home.index.gateway.private";
+    public static final String PRIVATE_GATEWAY_ENV = "WISE_HOME_INDEX_GATEWAY_PRIVATE";
+    public static final String DEFAULT_PRIVATE_GATEWAY = "gateway-internal";
+
     public static final String REFRESH_PROPERTY = "wise.home.index.refresh.seconds";
     public static final String REFRESH_ENV = "WISE_HOME_INDEX_REFRESH_SECONDS";
     public static final long DEFAULT_REFRESH_SECONDS = 300L;
@@ -49,15 +61,21 @@ public final class DiscoverySettings {
     private final String annotationPrefix;
     private final String publicIngressClass;
     private final String privateIngressClass;
+    private final String publicGatewayName;
+    private final String privateGatewayName;
     private final Duration refreshInterval;
 
     public DiscoverySettings(String annotationPrefix,
                              String publicIngressClass,
                              String privateIngressClass,
+                             String publicGatewayName,
+                             String privateGatewayName,
                              Duration refreshInterval) {
         this.annotationPrefix = annotationPrefix;
         this.publicIngressClass = publicIngressClass;
         this.privateIngressClass = privateIngressClass;
+        this.publicGatewayName = publicGatewayName;
+        this.privateGatewayName = privateGatewayName;
         this.refreshInterval = refreshInterval;
     }
 
@@ -69,13 +87,17 @@ public final class DiscoverySettings {
         String prefix = resolve(PREFIX_PROPERTY, PREFIX_ENV, DEFAULT_PREFIX);
         String publicClass = resolve(PUBLIC_CLASS_PROPERTY, PUBLIC_CLASS_ENV, DEFAULT_PUBLIC_CLASS);
         String privateClass = resolve(PRIVATE_CLASS_PROPERTY, PRIVATE_CLASS_ENV, DEFAULT_PRIVATE_CLASS);
+        String publicGateway = resolve(PUBLIC_GATEWAY_PROPERTY, PUBLIC_GATEWAY_ENV, DEFAULT_PUBLIC_GATEWAY);
+        String privateGateway = resolve(PRIVATE_GATEWAY_PROPERTY, PRIVATE_GATEWAY_ENV, DEFAULT_PRIVATE_GATEWAY);
         Duration refresh = resolveRefresh();
 
-        LOG.info(() -> "Ingress discovery configured: prefix=" + prefix
+        LOG.info(() -> "Application discovery configured: prefix=" + prefix
                 + ", publicClass=" + publicClass
                 + ", privateClass=" + privateClass
+                + ", publicGateway=" + publicGateway
+                + ", privateGateway=" + privateGateway
                 + ", refresh=" + refresh.toSeconds() + "s");
-        return new DiscoverySettings(prefix, publicClass, privateClass, refresh);
+        return new DiscoverySettings(prefix, publicClass, privateClass, publicGateway, privateGateway, refresh);
     }
 
     public String getAnnotationPrefix() {
@@ -88,6 +110,14 @@ public final class DiscoverySettings {
 
     public String getPrivateIngressClass() {
         return privateIngressClass;
+    }
+
+    public String getPublicGatewayName() {
+        return publicGatewayName;
+    }
+
+    public String getPrivateGatewayName() {
+        return privateGatewayName;
     }
 
     public Duration getRefreshInterval() {

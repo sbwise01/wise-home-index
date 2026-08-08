@@ -3,10 +3,11 @@ package com.bradandmarsha.wisehomeindex.model;
 /**
  * A single application to display on the index page.
  *
- * <p>Instances are discovered from Kubernetes {@code Ingress} resources. Each
- * field is populated from the {@code index.home.bradandmarsha.com/*} annotations
- * on the ingress, except for {@code url} (derived from the ingress host) and the
- * public/private visibility (derived from the ingress class).</p>
+ * <p>Instances are discovered from Kubernetes {@code Ingress} and/or Gateway API
+ * {@code HTTPRoute} resources. Each field is populated from the
+ * {@code index.home.bradandmarsha.com/*} annotations, except for {@code url}
+ * (derived from the host) and public/private visibility (ingress class or
+ * parent Gateway name).</p>
  *
  * <p>{@code name} and {@code url} are always present; {@code image} and
  * {@code description} are optional. {@code weight} controls display ordering
@@ -51,10 +52,11 @@ public class ApplicationEntry {
     }
 
     /**
-     * Whether this application is publicly visible. Determined by the ingress
-     * class of the originating {@code Ingress}: the public class (e.g.
-     * {@code nginx}) maps to {@code true}, and the private/internal class (e.g.
-     * {@code nginx-internal}) maps to {@code false}.
+     * Whether this application is publicly visible. For Ingress: public class
+     * (e.g. {@code nginx}) → {@code true}, private class (e.g.
+     * {@code nginx-internal}) → {@code false}. For HTTPRoute: parent Gateway
+     * {@code gateway-public} → {@code true}, {@code gateway-internal} →
+     * {@code false}.
      *
      * @return {@code true} when this entry should be shown to internet callers
      */
