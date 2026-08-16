@@ -37,7 +37,7 @@ spec:
   parentRefs:
     - name: gateway-public          # public; use gateway-internal for private
       namespace: kgateway-system
-      sectionName: https-flask-hello-world
+      sectionName: https-wildcard
   hostnames:
     - flask-hello-world.home.bradandmarsha.com
 ```
