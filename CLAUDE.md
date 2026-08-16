@@ -92,12 +92,14 @@ src/test/java/.../IndexServiceTest.java Visibility-filtering tests
 - **Application discovery** lives in the `discovery` package. `JaxRsApplication`
   wires a `CompositeApplicationSource` over `IngressApplicationSource` and
   `HttpRouteApplicationSource`. HTTPRoutes are listed via `CustomObjectsApi`
-  (`gateway.networking.k8s.io/v1`). On the same host, the HTTPRoute entry wins
-  (Ingress dual-run). Caching/failure behavior matches the prior Ingress-only
-  source. Pure mapping is in `IngressMapper` / `HttpRouteMapper`.
-- **Public vs private** is decided by ingress class (`nginx` / `nginx-internal`)
-  or HTTPRoute parent Gateway name (`gateway-public` / `gateway-internal`);
-  unknown → private. Stored on `ApplicationEntry.isPublic()`.
+  (`gateway.networking.k8s.io/v1`). **wise-k8s is HTTPRoute-only** (ingress-nginx
+  removed 2026-08-16); Ingress mapping remains for leftover objects. On the same
+  host, the HTTPRoute entry wins. Caching/failure behavior matches the prior
+  Ingress-only source. Pure mapping is in `IngressMapper` / `HttpRouteMapper`.
+- **Public vs private** is decided by HTTPRoute parent Gateway name
+  (`gateway-public` / `gateway-internal`); Ingress class `nginx` /
+  `nginx-internal` is still recognized if an Ingress exists. Unknown → private.
+  Stored on `ApplicationEntry.isPublic()`.
 - **Static assets** (the default tile) are served by Tomcat's default servlet.
   Jersey is registered as a *filter* with
   `jersey.config.servlet.filter.forwardOn404=true` so unmatched paths fall
@@ -120,7 +122,7 @@ env var `WISE_HOME_INDEX_PRIVATE_CIDR`, then `192.168.0.0/24`) and the trusted h
 host (`wise.home.index.public.host` / `WISE_HOME_INDEX_PUBLIC_HOST` /
 `home.bradandmarsha.com`) are resolved the same way.
 
-Recognized ingress annotations (with the default prefix):
+Recognized index annotations (with the default prefix) on **HTTPRoute** (live path):
 
 ```yaml
 metadata:
@@ -131,12 +133,14 @@ metadata:
     index.home.bradandmarsha.com/description: "Metrics dashboards"  # optional
     index.home.bradandmarsha.com/weight: "40"              # optional (sort order)
 spec:
-  ingressClassName: nginx           # public   (nginx-internal => private)
+  parentRefs:
+    - name: gateway-public          # public; gateway-internal => private
+      namespace: kgateway-system
 ```
 
 The Kubernetes API access requires RBAC granting `get/list/watch` on
-`networking.k8s.io/ingresses` to the `wise-home-index` service account (defined in
-the wise-k8s deployment's `rbac.yaml`).
+`networking.k8s.io/ingresses` and Gateway API HTTPRoutes to the `wise-home-index`
+service account (defined in the wise-k8s deployment's `rbac.yaml`).
 
 ## Build & run
 

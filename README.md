@@ -12,31 +12,16 @@ where the request comes from:
 | The home host's public IP (hairpin NAT) | public **and** private apps    |
 | Anywhere else (internet)                | public apps only               |
 
-* **Public apps** use the `nginx` ingress class and/or parent Gateway `gateway-public`.
-* **Private apps** use the `nginx-internal` ingress class and/or parent Gateway `gateway-internal`.
+* **Public apps** use parent Gateway `gateway-public`.
+* **Private apps** use parent Gateway `gateway-internal`.
 
 ## Application discovery
 
-Applications are discovered automatically from Kubernetes `Ingress` **and**
-Gateway API `HTTPRoute` resources across all namespaces — there is no static
-config file. A resource opts in with `index.home.bradandmarsha.com/enabled: "true"`
-and describes its tile via the same annotations:
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  annotations:
-    index.home.bradandmarsha.com/enabled: "true"                    # required
-    index.home.bradandmarsha.com/name: "Grafana Dashboard"          # required
-    index.home.bradandmarsha.com/image: "https://.../grafana.jpg"   # optional
-    index.home.bradandmarsha.com/description: "Metrics dashboards"   # optional
-    index.home.bradandmarsha.com/weight: "40"                       # optional, sort order
-spec:
-  ingressClassName: nginx           # public; use nginx-internal for private
-  rules:
-    - host: grafana-dashboard.home.bradandmarsha.com
-```
+Applications are discovered automatically from Kubernetes Gateway API `HTTPRoute`
+resources (and leftover `Ingress` objects, if any) across all namespaces — there
+is no static config file. A resource opts in with
+`index.home.bradandmarsha.com/enabled: "true"` and describes its tile via the
+same annotations. **wise-k8s uses HTTPRoute only** (ingress-nginx removed 2026-08-16).
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -45,22 +30,24 @@ metadata:
   annotations:
     index.home.bradandmarsha.com/enabled: "true"
     index.home.bradandmarsha.com/name: "Flask Hello World"
+    index.home.bradandmarsha.com/image: "https://.../flaskred.png"
+    index.home.bradandmarsha.com/description: "Sample Flask app"
     index.home.bradandmarsha.com/weight: "20"
 spec:
   parentRefs:
-    - name: gateway-public
+    - name: gateway-public          # public; use gateway-internal for private
       namespace: kgateway-system
       sectionName: https-flask-hello-world
   hostnames:
     - flask-hello-world.home.bradandmarsha.com
 ```
 
-* The tile **URL** is derived from the Ingress host or HTTPRoute `spec.hostnames`
-  (`https://` when TLS / an `https*` listener section is present).
-* **Visibility** comes from ingress class (`nginx` / `nginx-internal`) or from the
-  HTTPRoute parent Gateway name (`gateway-public` / `gateway-internal`). Unknown
-  → private.
-* During dual-run (same host on Ingress and HTTPRoute), the **HTTPRoute** tile wins.
+* The tile **URL** is derived from HTTPRoute `spec.hostnames` (`https://` when an
+  `https*` listener section is present). Ingress hosts are still mapped if present.
+* **Visibility** comes from the HTTPRoute parent Gateway name (`gateway-public` /
+  `gateway-internal`). Unknown → private. (Ingress class `nginx` / `nginx-internal`
+  is still recognized if an Ingress exists.)
+* If the same host appears on both Ingress and HTTPRoute, the **HTTPRoute** tile wins.
 * Tiles are ordered by `weight` ascending (lower first), then by name.
 * An enabled resource missing `name` or a usable host is skipped (with a warning).
 
